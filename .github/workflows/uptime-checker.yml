@@ -1,0 +1,89 @@
+name: Uptime Checker (ICMP Ping)
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Berjalan setiap 10 menit
+  workflow_dispatch: # Memungkinkan menjalankan secara manual
+
+jobs:
+  check_uptime:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Izin untuk menulis status.json
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20' # Gunakan versi Node.js yang stabil
+
+    - name: Install dependencies (optional, if you use a JS script for ping)
+      run: |
+        # Jika Anda menulis skrip ping dalam Node.js, instal dependensinya di sini
+        # Contoh: npm install ping
+        echo "No specific Node.js dependencies for direct shell ping."
+
+    - name: Perform ICMP Pings and Update Status JSON
+      id: ping_and_update
+      run: |
+        # Baca daftar server dari servers.json
+        SERVER_LIST=$(cat servers.json | jq -c '.[]')
+        
+        CURRENT_STATUS_ARRAY="[]"
+        
+        echo "$SERVER_LIST" | while IFS= read -r server_obj; do
+          SERVER_NAME=$(echo "$server_obj" | jq -r '.name')
+          SERVER_URL=$(echo "$server_obj" | jq -r '.url')
+          
+          echo "Pinging $SERVER_NAME ($SERVER_URL)..."
+          
+          # Lakukan ping. -c 4 = 4 paket, -W 5 = timeout 5 detik per paket
+          PING_OUTPUT=$(ping -c 4 -W 5 "$SERVER_URL" 2>&1)
+          
+          STATUS="DOWN"
+          LATENCY="N/A"
+
+          if echo "$PING_OUTPUT" | grep -q "0 received"; then
+            STATUS="DOWN"
+          else
+            STATUS="UP"
+            # Ekstrak rata-rata latensi
+            LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=min/avg/max/mdev = )[0-9.]+' | awk -F'/' '{print $2}')
+            if [ -z "$LATENCY_AVG" ]; then
+              LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=time=)[0-9.]+(?= ms)' | head -1) # fallback
+            fi
+            LATENCY="${LATENCY_AVG} ms"
+          fi
+          
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Buat objek status untuk server ini
+          SERVER_STATUS_JSON="{\"name\":\"${SERVER_NAME}\",\"url\":\"${SERVER_URL}\",\"status\":\"${STATUS}\",\"latency\":\"${LATENCY}\",\"timestamp\":\"${TIMESTAMP}\"}"
+          
+          # Tambahkan ke array status saat ini
+          if [ "$CURRENT_STATUS_ARRAY" = "[]" ]; then
+            CURRENT_STATUS_ARRAY="[${SERVER_STATUS_JSON}]"
+          else
+            CURRENT_STATUS_ARRAY=$(echo "$CURRENT_STATUS_ARRAY" | jq ". + [${SERVER_STATUS_JSON}]")
+          fi
+        done
+        
+        echo "$CURRENT_STATUS_ARRAY" > status.json
+        echo "Updated status.json with latest ping results."
+        cat status.json # Tampilkan konten untuk debugging
+      env:
+        # Pastikan jq terinstal di runner Ubuntu, yang seharusnya sudah ada
+        # atau tambahkan langkah untuk menginstalnya jika perlu
+        # Misalnya: apt-get update && apt-get install -y jq
+        # Namun di ubuntu-latest, jq biasanya sudah tersedia
+        LC_ALL: C.UTF-8 # Mengatasi masalah locale pada jq
+
+    - name: Commit and Push Status
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "chore(uptime): Update server status (ICMP ping)"
+        branch: main # Ganti dengan nama branch utama Anda
+        file_pattern: 'status.json'
