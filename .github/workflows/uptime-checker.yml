@@ -26,9 +26,16 @@ jobs:
         # Contoh: npm install ping
         echo "No specific Node.js dependencies for direct shell ping."
 
-    - name: Perform ICMP Pings and Update Status JSON
+- name: Perform ICMP Pings and Update Status JSON
       id: ping_and_update
       run: |
+        # Pastikan jq terinstal (biasanya sudah ada di ubuntu-latest)
+        if ! command -v jq &> /dev/null
+        then
+            echo "jq could not be found, installing..."
+            sudo apt-get update && sudo apt-get install -y jq
+        fi
+
         # Baca daftar server dari servers.json
         SERVER_LIST=$(cat servers.json | jq -c '.[]')
         
@@ -41,21 +48,49 @@ jobs:
           echo "Pinging $SERVER_NAME ($SERVER_URL)..."
           
           # Lakukan ping. -c 4 = 4 paket, -W 5 = timeout 5 detik per paket
+          # Tangkap stderr juga agar pesan error ping terlihat di log
           PING_OUTPUT=$(ping -c 4 -W 5 "$SERVER_URL" 2>&1)
+          PING_EXIT_CODE=$? # Tangkap kode keluar dari perintah ping
           
+          echo "Ping output for ${SERVER_URL}:"
+          echo "$PING_OUTPUT"
+          echo "Ping exit code: $PING_EXIT_CODE"
+
           STATUS="DOWN"
           LATENCY="N/A"
 
-          if echo "$PING_OUTPUT" | grep -q "0 received"; then
-            STATUS="DOWN"
-          else
-            STATUS="UP"
-            # Ekstrak rata-rata latensi
-            LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=min/avg/max/mdev = )[0-9.]+' | awk -F'/' '{print $2}')
-            if [ -z "$LATENCY_AVG" ]; then
-              LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=time=)[0-9.]+(?= ms)' | head -1) # fallback
+          # Cek status berdasarkan exit code ping dan outputnya
+          if [ "$PING_EXIT_CODE" -eq 0 ]; then
+            # Ping berhasil (exit code 0)
+            if echo "$PING_OUTPUT" | grep -q "0% packet loss"; then
+              STATUS="UP"
+              # Ekstrak rata-rata latensi
+              LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=min/avg/max/mdev = )[0-9.]+' | awk -F'/' '{print $2}')
+              if [ -z "$LATENCY_AVG" ]; then
+                # Fallback untuk format output ping yang berbeda
+                LATENCY_AVG=$(echo "$PING_OUTPUT" | grep -oP '(?<=time=)[0-9.]+(?= ms)' | head -1)
+              fi
+              LATENCY="${LATENCY_AVG} ms"
+            else
+              # Ping berhasil tapi ada packet loss
+              STATUS="DOWN" # Atau "PARTIAL" jika Anda ingin status menengah
+              LATENCY="Packet Loss"
             fi
-            LATENCY="${LATENCY_AVG} ms"
+          else
+            # Ping gagal (exit code bukan 0)
+            if echo "$PING_OUTPUT" | grep -q "100% packet loss"; then
+              STATUS="DOWN"
+              LATENCY="100% Loss"
+            elif echo "$PING_OUTPUT" | grep -q "unknown host"; then
+              STATUS="DOWN"
+              LATENCY="Unknown Host"
+            elif echo "$PING_OUTPUT" | grep -q "Destination Host Unreachable"; then
+              STATUS="DOWN"
+              LATENCY="Unreachable"
+            else
+              STATUS="DOWN"
+              LATENCY="Failed ($PING_EXIT_CODE)" # Menunjukkan kode keluar ping jika error lain
+            fi
           fi
           
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -75,11 +110,7 @@ jobs:
         echo "Updated status.json with latest ping results."
         cat status.json # Tampilkan konten untuk debugging
       env:
-        # Pastikan jq terinstal di runner Ubuntu, yang seharusnya sudah ada
-        # atau tambahkan langkah untuk menginstalnya jika perlu
-        # Misalnya: apt-get update && apt-get install -y jq
-        # Namun di ubuntu-latest, jq biasanya sudah tersedia
-        LC_ALL: C.UTF-8 # Mengatasi masalah locale pada jq
+        LC_ALL: C.UTF-8
 
     - name: Commit and Push Status
       uses: stefanzweifel/git-auto-commit-action@v5
