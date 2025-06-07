@@ -1,0 +1,6 @@
+[
+  { "name": "Google DNS", "url": "8.8.8.8" },
+  { "name": "Cloudflare DNS", "url": "1.1.1.1" },
+  { "name": "VPN Indosat", "url": "idvpn.rerechanstore.eu.org" },
+  { "name": "SG Eula", "url": "vpn.eula.biz.id" },
+  { "name": "Database", "url": "github.com" }
